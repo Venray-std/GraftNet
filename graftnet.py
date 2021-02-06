@@ -213,14 +213,19 @@ class GraftNet(nn.Module):
                 kb_tail_linear = getattr(self, 'kb_tail_linear' + str(i))
 
             # start propagation
+            # next_local_entity_emb实际就是更新的entity embedding
+            # 边训练,边生成图边根据图得到embedding。
+            # 实际上就是把question, kb, document,entity四者结合成为新的entity embedding 
             next_local_entity_emb = local_entity_emb
 
-            # STEP 1: propagate from question, documents, and facts to entities
+            # STEP 1: propagate from question, documents, and facts to entities 相当于建立entity的知识图
+            # 方法：document->entity: e Personalized PageRank. fact -> entity :DrQA
+            # query_node_emb：是query通过lstm
             # question -> entity
             q2e_emb = q2e_linear(self.linear_drop(query_node_emb)).expand(batch_size, max_local_entity, self.entity_dim) # batch_size, max_local_entity, entity_dim
             next_local_entity_emb = torch.cat((next_local_entity_emb, q2e_emb), dim=2) # batch_size, max_local_entity, entity_dim * 2
 
-            # document -> entity
+            # document -> entity d2e_emb
             if self.use_doc:
                 pagerank_e2d = sparse_bmm(entity_pos_mat.transpose(1,2), pagerank_d.unsqueeze(dim=2) / e2d_out_dim) # batch_size, max_relevant_doc * max_document_word, 1
                 pagerank_e2d = pagerank_e2d.view(batch_size, max_relevant_doc, max_document_word)
@@ -236,7 +241,7 @@ class GraftNet(nn.Module):
                 d2e_emb = sparse_bmm(entity_pos_mat, d2e_linear(document_textual_emb.view(batch_size, max_relevant_doc * max_document_word, self.entity_dim)))
                 d2e_emb = d2e_emb * pagerank_d.unsqueeze(dim=2) # batch_size, max_local_entity, entity_dim
             
-            # fact -> entity
+            # fact -> entity f2e_emb
             if self.use_kb:
                 e2f_emb = self.relu(kb_self_linear(local_fact_emb) + sparse_bmm(entity2fact_mat, kb_head_linear(self.linear_drop(local_entity_emb)))) # batch_size, max_fact, entity_dim
                 e2f_softmax_normalized = W_tilde.unsqueeze(dim=2) * sparse_bmm(entity2fact_mat, (pagerank_f / e2f_softmax).unsqueeze(dim=2)) # batch_size, max_fact, 1
@@ -246,6 +251,7 @@ class GraftNet(nn.Module):
                 pagerank_f = self.pagerank_lambda * sparse_bmm(fact2entity_mat, e2f_softmax_normalized).squeeze(dim=2) + (1 - self.pagerank_lambda) * pagerank_f # batch_size, max_local_entity
 
             # STEP 2: combine embeddings from fact and documents
+            # 将第一步形成的知识图embedding合并
             if self.use_doc and self.use_kb:
                 next_local_entity_emb = torch.cat((next_local_entity_emb, self.fact_scale * f2e_emb + d2e_emb), dim=2) # batch_size, max_local_entity, entity_dim * 3
             elif self.use_doc:
@@ -256,6 +262,7 @@ class GraftNet(nn.Module):
                 assert False, 'using neither kb nor doc ???'
             
             # STEP 3: propagate from entities to update question, documents, and facts
+            # entity信息传播。多层的话
             # entity -> document
             if self.use_doc:
                 e2d_emb = torch.bmm(d2e_adj_mat.transpose(1,2), e2d_linear(self.linear_drop(next_local_entity_emb / e2d_out_dim))) # batch_size, max_relevant_doc, entity_dim

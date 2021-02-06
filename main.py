@@ -9,18 +9,36 @@ from util import use_cuda, save_model, load_model, get_config, load_dict, cal_ac
 from util import load_documents, index_document_entities, output_pred_dist
 
 
+
 def train(cfg):
     print("training ...")
 
     # prepare data
+    # entities.txt， vocab.txt，relations.txt等文件
+    """
+        entity2id是一个字典，表示每个entity对应的id
+        word2id也是一个字典，表示每个word对应的id
+        relation2id也是，表示relation，比如has_tags这些谓词
+        以上三者数据量较小
+        train_documents 文件较大。是一个list,每个元素一个dict，包含document,title,tokens属性。
+
+        document属性下，有text, entities属性。text就是文本，entities是一个列表。表示text中每个entity以及其kb_id。
+        title下与document类似，只不过是title文本
+        token中应该是document和title的entity列表。
+
+        index_document_entities应该是
+    """
     entity2id = load_dict(cfg['data_folder'] + cfg['entity2id'])
     word2id = load_dict(cfg['data_folder'] + cfg['word2id'])
     relation2id = load_dict(cfg['data_folder'] + cfg['relation2id'])
 
+    # train_document.json
     train_documents = load_documents(cfg['data_folder'] + cfg['train_documents'])
+
     train_document_entity_indices, train_document_texts = index_document_entities(train_documents, word2id, entity2id, cfg['max_document_word'])
     train_data = DataLoader(cfg['data_folder'] + cfg['train_data'], train_documents, train_document_entity_indices, train_document_texts, word2id, relation2id, entity2id, cfg['max_query_word'], cfg['max_document_word'], cfg['use_kb'], cfg['use_doc'], cfg['use_inverse_relation']) 
     
+
     if cfg['dev_documents'] != cfg['train_documents']:
         valid_documents = load_documents(cfg['data_folder'] + cfg['dev_documents'])
         valid_document_entity_indices, valid_document_texts = index_document_entities(valid_documents, word2id, entity2id, cfg['max_document_word'])
@@ -38,7 +56,7 @@ def train(cfg):
     test_data = DataLoader(cfg['data_folder'] + cfg['test_data'], test_documents, test_document_entity_indices, test_document_texts, word2id, relation2id, entity2id, cfg['max_query_word'], cfg['max_document_word'], cfg['use_kb'], cfg['use_doc'], cfg['use_inverse_relation'])
 
     # create model & set parameters
-    my_model = get_model(cfg, train_data.num_kb_relation, len(entity2id), len(word2id))
+    my_model = get_model(cfg, train_data.num_kb_relation, len(entity2id), len(word2id), "train")
     trainable_parameters = [p for p in my_model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable_parameters, lr=cfg['learning_rate'])
 
@@ -55,7 +73,7 @@ def train(cfg):
                 loss, pred, _ = my_model(batch)
                 pred = pred.data.cpu().numpy()
                 acc, max_acc = cal_accuracy(pred, batch[-1])
-                train_loss.append(loss.data[0])
+                train_loss.append(loss.data)
                 train_acc.append(acc)
                 train_max_acc.append(max_acc)
                 # back propogate
@@ -103,7 +121,7 @@ def inference(my_model, valid_data, entity2id, cfg, log_info=False):
         acc, max_acc = cal_accuracy(pred, batch[-1])
         if log_info: 
             output_pred_dist(pred_dist, batch[-1], id2entity, iteration * test_batch_size, valid_data, f_pred)
-        eval_loss.append(loss.data[0])
+        eval_loss.append(loss.data)
         eval_acc.append(acc)
         eval_max_acc.append(max_acc)
 
@@ -122,12 +140,12 @@ def test(cfg):
     test_document_entity_indices, test_document_texts = index_document_entities(test_documents, word2id, entity2id, cfg['max_document_word'])
     test_data = DataLoader(cfg['data_folder'] + cfg['test_data'], test_documents, test_document_entity_indices, test_document_texts, word2id, relation2id, entity2id, cfg['max_query_word'], cfg['max_document_word'], cfg['use_kb'], cfg['use_doc'], cfg['use_inverse_relation'])
 
-    my_model = get_model(cfg, test_data.num_kb_relation, len(entity2id), len(word2id))
+    my_model = get_model(cfg, test_data.num_kb_relation, len(entity2id), len(word2id), "test")
     test_acc = inference(my_model, test_data, entity2id, cfg, log_info=True)
     return test_acc
 
 
-def get_model(cfg, num_kb_relation, num_entities, num_vocab):
+def get_model(cfg, num_kb_relation, num_entities, num_vocab, experiment_type):
     word_emb_file = None if cfg['word_emb_file'] is None else cfg['data_folder'] + cfg['word_emb_file']
     entity_emb_file = None if cfg['entity_emb_file'] is None else cfg['data_folder'] + cfg['entity_emb_file']
     entity_kge_file = None if cfg['entity_kge_file'] is None else cfg['data_folder'] + cfg['entity_kge_file']
@@ -136,7 +154,7 @@ def get_model(cfg, num_kb_relation, num_entities, num_vocab):
     
     my_model = use_cuda(GraftNet(word_emb_file, entity_emb_file, entity_kge_file, relation_emb_file, relation_kge_file, cfg['num_layer'], num_kb_relation, num_entities, num_vocab, cfg['entity_dim'], cfg['word_dim'], cfg['kge_dim'], cfg['pagerank_lambda'], cfg['fact_scale'], cfg['lstm_dropout'], cfg['linear_dropout'], cfg['use_kb'], cfg['use_doc'])) 
 
-    if cfg['load_model_file'] is not None:
+    if cfg['load_model_file'] is not None and experiment_type == "test":
         print('loading model from', cfg['load_model_file'])
         pretrained_model_states = torch.load(cfg['load_model_file'])
         if word_emb_file is not None:
@@ -148,6 +166,7 @@ def get_model(cfg, num_kb_relation, num_entities, num_vocab):
     return my_model
 
 if __name__ == "__main__":
+    # 一般的，输入python main.py --test config/wikimovie.yml 可运行
     config_file = sys.argv[2]
     CFG = get_config(config_file)
     if '--train' == sys.argv[1]:

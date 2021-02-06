@@ -38,7 +38,7 @@ def load_dict(filename):
     word2id = dict()
     with open(filename) as f_in:
         for line in f_in:
-            word = line.strip().decode('UTF-8')
+            word = line.strip().encode().decode('UTF-8')
             word2id[word] = len(word2id)
     return word2id
 
@@ -128,7 +128,7 @@ class LeftMMFixed(torch.autograd.Function):
     Implementation of matrix multiplication of a Sparse Variable with a Dense Variable, returning a Dense one.
     This is added because there's no autograd for sparse yet. No gradient computed on the sparse weights.
     """
-
+    """
     def __init__(self):
         super(LeftMMFixed, self).__init__()
         self.sparse_weights = None
@@ -141,7 +141,16 @@ class LeftMMFixed(torch.autograd.Function):
     def backward(self, grad_output):
         sparse_weights = self.sparse_weights
         return None, torch.mm(sparse_weights.t(), grad_output)
+    """
+    @staticmethod 
+    def forward(ctx,sparse_weights, x):
+        ctx.sparse_weights = sparse_weights
+        return torch.mm(ctx.sparse_weights, x)
 
+    @staticmethod 
+    def backward(ctx, grad_output):
+        sparse_weights = ctx.sparse_weights
+        return None, torch.mm(sparse_weights.t(), grad_output)
 
 def sparse_bmm(X, Y):
     """Batch multiply X and Y where X is sparse, Y is dense.
@@ -160,8 +169,9 @@ def sparse_bmm(X, Y):
     lookup = Y[I[0, :], I[2, :], :]
     X_I = torch.stack((I[0, :] * M + I[1, :], use_cuda(torch.arange(Z).type(torch.LongTensor))), 0)
     S = use_cuda(Variable(torch.cuda.sparse.FloatTensor(X_I, V, torch.Size([B * M, Z])), requires_grad=False))
-    prod_op = LeftMMFixed()
-    prod = prod_op(S, lookup)
+    # prod_op = LeftMMFixed()
+    # prod = prod_op(S, lookup)
+    prod = LeftMMFixed.apply(S, lookup)
     return prod.view(B, M, K)
 
 
@@ -180,7 +190,7 @@ def read_padded(my_lstm, document_emb, document_mask):
     document_emb = document_emb[use_cuda(perm_idx)]
     inverse_perm_idx = [0] * len(perm_idx)
     for i, idx in enumerate(perm_idx):
-        inverse_perm_idx[idx.data[0]] = i
+        inverse_perm_idx[idx.data] = i
     inverse_perm_idx = torch.LongTensor(inverse_perm_idx)
 
     document_lengths_np = document_lengths.data.cpu().numpy()
